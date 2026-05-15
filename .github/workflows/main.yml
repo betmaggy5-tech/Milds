@@ -1,0 +1,156 @@
+name: VM Setup Workflow
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime:
+        description: "Session runtime in minutes"
+        required: true
+        default: "360"
+
+jobs:
+  setup-vm:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install QEMU and components
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+          qemu-system-x86 \
+          ovmf \
+          wget \
+          curl \
+          unzip \
+          p7zip-full \
+          unrar-free \
+          tar \
+          python3-pip \
+          jq
+
+          pip install internetarchive
+
+          git clone https://github.com/stck-lzm/badown ~/badown
+          chmod +x ~/badown/badown
+          sudo touch ~/badown/.badown.tmp
+
+      - name: Download macOS-Simple-KVM archive
+        env:
+          SRC: "https://www.mediafire.com/file/insfa1o9yt48jp4/macOS-Simple-KVM.7z"
+          FILE_PATH: "/mnt/macOS-Simple-KVM.7z"
+        run: |
+          echo "Using badown to download from: $SRC"
+
+          cd ~/badown
+
+          CACHE_FILE="/tmp/badown_cache.log"
+          : > "$CACHE_FILE"
+
+          (
+            sudo ./badown "$SRC" >"$CACHE_FILE" 2>&1 &
+            pid=$!
+
+            last_update=$(date +%s)
+
+            while kill -0 $pid 2>/dev/null; do
+              now=$(date +%s)
+
+              if (( now - last_update >= 10 )); then
+                new_progress=$(grep -Eo '[0-9]{1,3}%' "$CACHE_FILE" | tail -n1)
+
+                if [[ -n "$new_progress" ]]; then
+                  echo "Downloading... $new_progress"
+                else
+                  echo "Downloading..."
+                fi
+
+                last_update=$now
+              fi
+
+              sleep 0.2
+            done
+
+            wait $pid
+          )
+
+          DOWNLOADED=$(ls -t | head -n1)
+          sudo mv "$DOWNLOADED" "$FILE_PATH"
+
+      - name: Extract macOS-Simple-KVM archive
+        run: |
+          cd /mnt
+
+          sudo 7z x macOS-Simple-KVM.7z -o/mnt -y
+
+          sudo rm -f /mnt/macOS-Simple-KVM.7z
+          sudo rm -f /mnt/macOS-Simple-KVM/basic.sh
+
+          sudo wget -q -O /mnt/macOS-Simple-KVM/basic.sh \
+          https://gitlab.com/MR.English2008/Mega_Gen/-/raw/main/basic.sh
+
+          sudo chmod +x /mnt/macOS-Simple-KVM/basic.sh
+
+      - name: Run macOS VM
+        run: |
+          cd /mnt/macOS-Simple-KVM
+
+          sudo chmod +x basic.sh
+
+          nohup sudo ./basic.sh >/dev/null 2>&1 &
+
+      - name: Install AnyDesk
+        run: |
+          wget -qO - https://keys.anydesk.com/repos/DEB-GPG-KEY | \
+          sudo gpg --dearmor -o /usr/share/keyrings/anydesk.gpg
+
+          echo "deb [signed-by=/usr/share/keyrings/anydesk.gpg] \
+          http://deb.anydesk.com/ all main" | \
+          sudo tee /etc/apt/sources.list.d/anydesk.list
+
+          sudo apt update -qq
+
+          sudo apt install -y anydesk
+
+      - name: Start AnyDesk
+        run: |
+          sudo systemctl enable anydesk.service
+          sudo systemctl start anydesk.service
+
+          sleep 20
+
+      - name: Configure AnyDesk Password
+        run: |
+          echo "12345678" | sudo anydesk --set-password
+
+      - name: Get AnyDesk ID
+        run: |
+          ANYDESK_ID=$(anydesk --get-id)
+
+          echo "ANYDESK_ID=$ANYDESK_ID" >> $GITHUB_ENV
+
+      - name: Display AnyDesk Connection Info
+        run: |
+          echo "=== ANYDESK CONNECTION INFORMATION ==="
+          echo
+          echo "Connection Method: AnyDesk"
+          echo "Selected Program: AnyDesk"
+          echo
+          echo "AnyDesk ID:"
+          echo "${ANYDESK_ID}"
+          echo
+          echo "AnyDesk Password:"
+          echo "12345678"
+          echo
+          echo ">>> AnyDesk Connection: ${ANYDESK_ID}"
+          echo
+
+      - name: Keep Session Alive
+        run: |
+          RUNTIME="${{ github.event.inputs.runtime }}"
+
+          sleep $((RUNTIME * 60))
+
+          echo "Session ended after $RUNTIME minutes."
